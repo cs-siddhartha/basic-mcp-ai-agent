@@ -1,5 +1,8 @@
 """
-Agent loop runner for MCP tool execution.
+MCP Client 
+- Uses stdio transport
+- Opens ClientSession
+- Uses tools exposed by MCP Server (server.py)
 """
 
 import asyncio
