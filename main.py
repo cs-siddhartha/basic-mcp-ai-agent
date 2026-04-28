@@ -6,13 +6,15 @@ MCP Client
 """
 
 import asyncio
+import json
 import os
 from concurrent.futures import TimeoutError
+from pathlib import Path
 
 from dotenv import load_dotenv
-from google import genai
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from openai import OpenAI
 
 from agent.loop_core import extract_first_line, parse_function_call
 from instructions.prompt import system_prompt_template
@@ -20,11 +22,12 @@ from instructions.task import task
 
 load_dotenv()
 
-MODEL = "gemini-3.1-flash-lite-preview"
+MODEL = "gpt-4.1-mini"
 MAX_ITERATIONS = 6
 LLM_TIMEOUT = 15
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+UI_PAYLOAD_PATH = Path("data/ui_payload.json")
 
 
 def build_tools_desc(tools) -> str:
@@ -36,13 +39,28 @@ def build_tools_desc(tools) -> str:
   return "\n".join(lines)
 
 
+def save_prefab_payload(answer_text: str) -> bool:
+  """Persist FINAL_ANSWER JSON payload for Prefab UI rendering."""
+  try:
+    payload = json.loads(answer_text)
+  except json.JSONDecodeError:
+    return False
+
+  if not isinstance(payload, dict) or payload.get("type") != "prefab":
+    return False
+
+  UI_PAYLOAD_PATH.parent.mkdir(parents=True, exist_ok=True)
+  UI_PAYLOAD_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+  return True
+
+
 async def generate_with_timeout(prompt: str, timeout: int = LLM_TIMEOUT):
-  """Run the blocking Gemini call in a thread with a timeout."""
+  """Run the blocking OpenAI call in a thread with a timeout."""
   loop = asyncio.get_event_loop()
   return await asyncio.wait_for(
     loop.run_in_executor(
       None,
-      lambda: client.models.generate_content(model=MODEL, contents=prompt),
+      lambda: client.responses.create(model=MODEL, input=prompt).output_text,
     ),
     timeout=timeout,
   )
@@ -86,12 +104,17 @@ async def run_agent_loop():
           print(f"LLM error: {e}")
           break
 
-        text = extract_first_line(response.text)
+        text = extract_first_line(response)
         print(f"LLM: {text}")
 
         if text.startswith("FINAL_ANSWER:"):
           print("\n=== Agent done ===")
           print(text)
+          answer_text = text.split(":", 1)[1].strip()
+          if save_prefab_payload(answer_text):
+            print(f"Saved Prefab payload to {UI_PAYLOAD_PATH}")
+          else:
+            print("FINAL_ANSWER was not valid Prefab JSON.")
           break
 
         if not text.startswith("FUNCTION_CALL:"):
